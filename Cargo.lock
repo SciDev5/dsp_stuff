@@ -245,6 +245,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dynconv"
+version = "0.1.0"
+dependencies = [
+ "dsp_stuff",
+ "nih_plug",
+ "rustfft",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

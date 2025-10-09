@@ -1,10 +1,14 @@
 //! convolution
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use rustfft::FftPlanner;
 
-use crate::{NComplex, NFloat, fft::FFTPair};
+use crate::{
+    NComplex, NFloat,
+    fft::FFTPair,
+    wavetable::{Wavetable, WavetableHistory},
+};
 
 impl FFTPair {
     /// Evaluate the circular convolution of `a` and `b` using FFT.
@@ -47,8 +51,8 @@ pub struct ConvOverlapScrap {
     filter_size: usize,
     fft: FFTPair,              // fft[size]
     filter_fft: Vec<NComplex>, // [size]
-    /// `(&mut filter_fft, filter_size) => void`
-    pub regen_filter: Option<Box<dyn Fn(&mut [NComplex], usize)>>,
+    /// `(&mut filter_fft, &mut fft) => void`
+    pub regen_filter: Option<Box<dyn Fn(&mut [NComplex], &mut FFTPair) + Send>>,
     buf_in_save: Vec<NComplex>, // [scrap_size]
     buf_in: Vec<NComplex>,      // [size]
     buf_out: Vec<NComplex>,     // [size] (invalid: [scrap_size], valid: [block_size])
@@ -69,9 +73,9 @@ impl ConvOverlapScrap {
     }
     pub fn with_regen_filter(
         mut self,
-        regen_filter: Option<Box<dyn Fn(&mut [NComplex], usize)>>,
+        regen_filter: Box<dyn Fn(&mut [NComplex], &mut FFTPair) + Send>,
     ) -> Self {
-        self.regen_filter = regen_filter;
+        self.regen_filter = Some(regen_filter);
         self
     }
     #[inline]
@@ -107,7 +111,7 @@ impl ConvOverlapScrap {
         let block_size = self.block_size();
         self.buf_in_save.copy_from_slice(&self.buf_in[block_size..]);
         if let Some(regen_filter) = &self.regen_filter {
-            regen_filter(&mut self.filter_fft, self.filter_size);
+            regen_filter(&mut self.filter_fft, &mut self.fft);
         }
         self.fft
             .conv_circular_b_fft(&mut self.buf_in, &self.filter_fft);
@@ -150,13 +154,11 @@ impl ConvBlock {
 
 // if latency = [offset into impulse response] => zero effective latency
 pub struct ConvHybridLong {
-    total_len: usize,
     conv_seed: ConvBlock,
     conv_stack: Vec<ConvOverlapScrap>,
 }
 impl ConvHybridLong {
     pub fn new_alloc(planner: &mut FftPlanner<NFloat>, mut filter: Vec<NFloat>) -> Self {
-        let total_len = filter.len();
         let mut n = 5;
         let mut filter_rem = filter.split_off(1 << n);
         let conv_seed = ConvBlock::new_alloc(filter);
@@ -179,12 +181,85 @@ impl ConvHybridLong {
             n += 1;
         }
         Self {
-            total_len,
             conv_seed,
             conv_stack,
         }
     }
     pub fn process(&mut self, s: NFloat) -> NFloat {
+        self.conv_seed.process(s)
+            + self
+                .conv_stack
+                .iter_mut()
+                .map(|conv| conv.process(s))
+                .sum::<NFloat>()
+    }
+}
+
+pub struct ConvHybridDynamic<WT: Wavetable> {
+    conv_seed: ConvBlock,
+    conv_stack: Vec<ConvOverlapScrap>,
+    filter_table: Arc<WavetableHistory<WT>>,
+}
+impl<WT: Wavetable + 'static> ConvHybridDynamic<WT> {
+    pub fn new_alloc(
+        planner: &mut FftPlanner<NFloat>,
+        table: WT,
+        gen_initial_input: impl Fn() -> WT::Inputs,
+    ) -> Self {
+        let size = table.size();
+        if !size.is_power_of_two() {
+            panic!("ConvHybridDynamic filter size must be power of two");
+        }
+        let n = 5;
+        let filter_table = Arc::new(WavetableHistory::new_alloc(size, table, gen_initial_input));
+        // let mut lrem = size - (1 << n);
+        let conv_seed = ConvBlock::new_alloc(Vec::from_iter(std::iter::repeat_n(0.0, 1 << n)));
+        let mut conv_stack = Vec::new();
+        let mut filter_offset = 1 << n;
+        for n_ in n..size.trailing_zeros() {
+            let filter_section_size = 1 << n_;
+            conv_stack.push({
+                let loff = filter_offset;
+                let filter_table = filter_table.clone();
+                let lots_of_zeros =
+                    Vec::from_iter(std::iter::repeat_n(NComplex::ZERO, filter_section_size));
+                let s = ConvOverlapScrap::new_alloc(
+                    planner,
+                    filter_section_size << 1,
+                    filter_section_size,
+                )
+                .with_regen_filter(Box::new(move |filt, fft| {
+                    let filter_table = filter_table.as_ref();
+                    filt[filter_section_size..].copy_from_slice(&lots_of_zeros);
+                    for i in 0..filter_section_size {
+                        filt[i] = NComplex::new(filter_table.sample(i, loff as usize + i), 0.0);
+                    }
+                    fft.fwd(filt);
+                }));
+                dbg!((filter_offset, filter_section_size, s.latency()));
+                s
+            });
+            filter_offset += filter_section_size;
+        }
+        Self {
+            conv_seed,
+            conv_stack,
+            filter_table,
+        }
+    }
+    pub fn process(&mut self, s: NFloat, inputs: WT::Inputs) -> NFloat {
+        {
+            let filter_table = unsafe {
+                (self.filter_table.as_ref() as *const WavetableHistory<WT>
+                    as *mut WavetableHistory<WT>)
+                    .as_mut()
+                    .unwrap_unchecked()
+            };
+            filter_table.step(inputs);
+            for i in 0..self.conv_seed.filter.len() {
+                self.conv_seed.filter[i] = filter_table.sample(i, i);
+            }
+        }
         self.conv_seed.process(s)
             + self
                 .conv_stack
@@ -202,8 +277,9 @@ mod test {
 
     use crate::{
         NComplex, NFloat,
-        conv::{ConvBlock, ConvHybridLong, ConvOverlapScrap},
+        conv::{ConvBlock, ConvHybridDynamic, ConvHybridLong, ConvOverlapScrap},
         fft::FFTPair,
+        wavetable::Wavetable,
     };
 
     #[test]
@@ -302,14 +378,18 @@ mod test {
                 .take(c_ground_truth.len())
                 .collect::<Vec<_>>();
             let rms_gt = c_ground_truth.iter().map(|x| x * x).sum::<NFloat>().sqrt();
+            let rms_f = c_fast.iter().map(|x| x * x).sum::<NFloat>().sqrt();
             let rmse = c_ground_truth
                 .iter()
                 .zip(c_fast.iter())
                 .map(|(x, y)| (x - y) * (x - y))
                 .sum::<NFloat>()
                 .sqrt();
+            dbg!(rms_f);
+            dbg!(rms_f / rms_gt);
             dbg!(rmse / rms_gt);
             assert!(rmse / rms_gt < 1e-8);
+            assert!((rms_f / rms_gt - 1.0).abs() < 1e-8);
         }
     }
 
@@ -340,12 +420,44 @@ mod test {
     }
 
     #[test]
-    fn test_conv_hybrid() {
+    fn test_conv_hybrid_long() {
         test_conv_generic(
             2345,
             500,
             |b| ConvHybridLong::new_alloc(&mut FftPlanner::new(), b.clone()),
             ConvHybridLong::process,
+            |_| 0,
+        );
+    }
+
+    struct WavetableConst {
+        data: Vec<NFloat>,
+    }
+    impl Wavetable for WavetableConst {
+        type Inputs = ();
+        fn size(&self) -> usize {
+            self.data.len()
+        }
+        fn sample_interp(&self, _inputs: &Self::Inputs, _pos: NFloat) -> NFloat {
+            panic!("do not use")
+        }
+        fn sample(&self, _inputs: &Self::Inputs, pos: usize) -> NFloat {
+            self.data[pos]
+        }
+    }
+    #[test]
+    fn test_conv_hybrid_dyn() {
+        test_conv_generic(
+            2345,
+            1024,
+            |b| {
+                ConvHybridDynamic::new_alloc(
+                    &mut FftPlanner::new(),
+                    WavetableConst { data: b.clone() },
+                    || (),
+                )
+            },
+            |conv, s| conv.process(s, ()),
             |_| 0,
         );
     }

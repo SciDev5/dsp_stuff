@@ -3,12 +3,15 @@ name = "dsp_stuff"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+prefer_f32 = []
+
 
 [workspace]
-members = ["xtask"]
+members = ["plugins/dynconv", "xtask"]
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "lib"]
 
 [dependencies]
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
