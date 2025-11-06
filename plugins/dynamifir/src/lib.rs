@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 /// A test tone generator that can either generate a sine wave based on the plugin's parameters or
 /// based on the current MIDI input.
-pub struct DynConv {
-    params: Arc<DynConvParams>,
+pub struct DynamiFIR {
+    params: Arc<DynamiFIRParams>,
     conv: [ConvHybridDynamic<DbgWavetable>; 2],
     prev: [f32; 2],
 
@@ -39,7 +39,7 @@ impl<'a> PersistentField<'a, SavedSample> for Arc<SavedSample> {
 }
 
 #[derive(Params)]
-struct DynConvParams {
+struct DynamiFIRParams {
     #[persist = "sample"]
     v: Arc<SavedSample>,
 
@@ -49,10 +49,10 @@ struct DynConvParams {
     pub fb: FloatParam,
 }
 
-impl Default for DynConv {
+impl Default for DynamiFIR {
     fn default() -> Self {
         Self {
-            params: Arc::new(DynConvParams::default()),
+            params: Arc::new(DynamiFIRParams::default()),
             sample_rate: 1.0,
             conv: [
                 ConvHybridDynamic::new_alloc(&mut FftPlanner::new(), DbgWavetable, || 0.0),
@@ -63,7 +63,7 @@ impl Default for DynConv {
     }
 }
 
-impl Default for DynConvParams {
+impl Default for DynamiFIRParams {
     fn default() -> Self {
         Self {
             v: Arc::new(SavedSample {
@@ -89,38 +89,38 @@ impl Default for DynConvParams {
     }
 }
 
-struct DynConvEditor {}
-impl Editor for DynConvEditor {
-    fn spawn(
-        &self,
-        parent: ParentWindowHandle,
-        context: Arc<dyn GuiContext>,
-    ) -> Box<dyn std::any::Any + Send> {
-    }
+// struct DynamiFIREditor {}
+// impl Editor for DynamiFIREditor {
+//     fn spawn(
+//         &self,
+//         parent: ParentWindowHandle,
+//         context: Arc<dyn GuiContext>,
+//     ) -> Box<dyn std::any::Any + Send> {
+//     }
 
-    fn size(&self) -> (u32, u32) {
-        todo!()
-    }
+//     fn size(&self) -> (u32, u32) {
+//         todo!()
+//     }
 
-    fn set_scale_factor(&self, factor: f32) -> bool {
-        todo!()
-    }
+//     fn set_scale_factor(&self, factor: f32) -> bool {
+//         todo!()
+//     }
 
-    fn param_value_changed(&self, id: &str, normalized_value: f32) {
-        todo!()
-    }
+//     fn param_value_changed(&self, id: &str, normalized_value: f32) {
+//         todo!()
+//     }
 
-    fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
-        todo!()
-    }
+//     fn param_modulation_changed(&self, id: &str, modulation_offset: f32) {
+//         todo!()
+//     }
 
-    fn param_values_changed(&self) {
-        todo!()
-    }
-}
+//     fn param_values_changed(&self) {
+//         todo!()
+//     }
+// }
 
-impl Plugin for DynConv {
-    const NAME: &'static str = "DynConv";
+impl Plugin for DynamiFIR {
+    const NAME: &'static str = "DynamiFIR";
     const VENDOR: &'static str = "SciDev5";
     const URL: &'static str = "https://github.com/scidev5/dsp_stuff";
     const EMAIL: &'static str = "";
@@ -162,7 +162,7 @@ impl Plugin for DynConv {
         true
     }
 
-    fn editor(&mut self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {}
+    // fn editor(&mut self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {}
 
     fn reset(&mut self) {}
 
@@ -192,8 +192,8 @@ impl Plugin for DynConv {
     }
 }
 
-impl ClapPlugin for DynConv {
-    const CLAP_ID: &'static str = "me.scidev5.dynconv";
+impl ClapPlugin for DynamiFIR {
+    const CLAP_ID: &'static str = "me.scidev5.dynamifir";
     const CLAP_DESCRIPTION: Option<&'static str> =
         Some("Hybrid convolution, but the impulse response is a wavetable");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
@@ -205,8 +205,8 @@ impl ClapPlugin for DynConv {
         ClapFeature::Mono,
     ];
 }
-impl Vst3Plugin for DynConv {
-    const VST3_CLASS_ID: [u8; 16] = *b"SD5_DynConv_____";
+impl Vst3Plugin for DynamiFIR {
+    const VST3_CLASS_ID: [u8; 16] = *b"SD5_DynamiFIR___";
 
     const VST3_SUBCATEGORIES: &'static [Vst3SubCategory] = &[
         Vst3SubCategory::Fx,
@@ -216,5 +216,5 @@ impl Vst3Plugin for DynConv {
     ];
 }
 
-nih_export_clap!(DynConv);
-nih_export_vst3!(DynConv);
+nih_export_clap!(DynamiFIR);
+nih_export_vst3!(DynamiFIR);

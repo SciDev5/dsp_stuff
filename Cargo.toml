@@ -8,7 +8,7 @@ prefer_f32 = []
 
 
 [workspace]
-members = ["plugins/dynconv", "xtask"]
+members = ["plugins/dynamifir", "xtask"]
 
 [lib]
 crate-type = ["cdylib", "lib"]

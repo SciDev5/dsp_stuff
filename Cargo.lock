@@ -245,7 +245,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dynconv"
+name = "dynamifir"
 version = "0.1.0"
 dependencies = [
  "dsp_stuff",
