@@ -86,24 +86,19 @@ impl Plugin for BRJTest {
             order_band_out: 1,
             order_repitch_lowpass: 4,
         };
-        let log2_bins: Vec<_> = (-48..60).map(|i| i as f64 / 12.0).collect();
 
-        self.brj = Some(
-            [
-                BinRepitchJoin::new_alloc(config, log2_bins.clone()),
-                BinRepitchJoin::new_alloc(config, log2_bins),
-            ]
-            .map(|mut brj| {
-                brj.set_repitch(|mapping| {
-                    for i in 0..mapping.len() {
-                        // mapping[i] = [0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11][i % 12] + i / 12 * 12;
-                        mapping[i] = [0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10][i % 12] + i / 12 * 12;
-                        // mapping[i] = [0, 0, 4, 4, 4, 4, 9, 9, 9, 9, 9, 0][i % 12] + i / 12 * 12;
-                    }
-                });
-                brj
-            }),
-        );
+        self.brj = Some([(); 2].map(|_| {
+            BinRepitchJoin::new(config, 48, |i| {
+                let j = [0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11][i % 12] + i / 12 * 12;
+                // let j = [0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10][i % 12] + i / 12 * 12;
+                // let j = [0, 0, 4, 4, 4, 4, 9, 9, 9, 9, 9, 0][i % 12] + i / 12 * 12;
+                (
+                    i as f64 / 12.0 - 1.0,
+                    j as f64 / 12.0 - 1.0,
+                    Some(1.0 as NFloat),
+                )
+            })
+        }));
 
         true
     }

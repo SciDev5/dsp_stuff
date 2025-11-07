@@ -3,6 +3,8 @@ use num::Complex;
 pub mod binrepitchjoin;
 pub mod conv;
 pub mod fft;
+pub mod iir;
+pub mod util;
 pub mod wavetable;
 
 pub use nih_plug;

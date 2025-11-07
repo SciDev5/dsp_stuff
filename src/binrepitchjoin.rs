@@ -4,9 +4,12 @@ use iir_filters::{
     sos::{Sos, zpk2sos},
 };
 
-use crate::NFloat;
+use crate::{
+    NFloat,
+    iir::{IIRFilterBA, IIRFilterType},
+};
 
-// #[test]
+#[test]
 fn s() {
     // use biquad::*;
 
@@ -68,7 +71,36 @@ fn s() {
 
     // let mut dft2 = DirectForm2Transposed::new(&sos);
 
-    let mut brj = BinRepitchJoin::new_alloc(
+    // let mut iirfba = IIRFilterBA::<10>::new(
+    //     config.sample_rate.0 as f64,
+    //     crate::iir::IIRFilterType::BandPass {
+    //         low_cutoff: 450.0,
+    //         high_cutoff: 430.0,
+    //     },
+    //     3,
+    // );
+
+    // let mut brj = BinRepitchJoin::new(
+    //     BinRepitchJoinConfig {
+    //         sample_rate: config.sample_rate.0 as f64,
+    //         zero_freq: 440.0,
+    //         log2_bin_width: 0.75 / 12.0,
+    //         order_band_in: 2,
+    //         order_band_out: 1,
+    //         order_repitch_lowpass: 4,
+    //     },
+    //     // (-36..60).map(|i| i as f64 / 12.0).collect(),
+    //     // (-48..60).map(|i| i as f64 / 12.0).collect(),
+    //     (-12..36).map(|i| i as f64 / 12.0).collect(),
+    // );
+    // brj.set_repitch(|mapping| {
+    //     for i in 0..mapping.len() {
+    //         // mapping[i] = [0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11][i % 12] + i / 12 * 12;
+    //         mapping[i] = [0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10][i % 12] + i / 12 * 12;
+    //         // mapping[i] = [0, 0, 4, 4, 4, 4, 9, 9, 9, 9, 9, 0][i % 12] + i / 12 * 12;
+    //     }
+    // });
+    let mut brj = BinRepitchJoin::new(
         BinRepitchJoinConfig {
             sample_rate: config.sample_rate.0 as f64,
             zero_freq: 440.0,
@@ -77,17 +109,18 @@ fn s() {
             order_band_out: 1,
             order_repitch_lowpass: 4,
         },
-        // (-36..60).map(|i| i as f64 / 12.0).collect(),
-        // (-48..60).map(|i| i as f64 / 12.0).collect(),
-        (-12..36).map(|i| i as f64 / 12.0).collect(),
+        48,
+        |i| {
+            let j = [0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11][i % 12] + i / 12 * 12;
+            // let j = [0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10][i % 12] + i / 12 * 12;
+            // let j = [0, 0, 4, 4, 4, 4, 9, 9, 9, 9, 9, 0][i % 12] + i / 12 * 12;
+            (
+                i as f64 / 12.0 - 1.0,
+                j as f64 / 12.0 - 1.0,
+                Some(1.0 as NFloat),
+            )
+        },
     );
-    brj.set_repitch(|mapping| {
-        for i in 0..mapping.len() {
-            // mapping[i] = [0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11][i % 12] + i / 12 * 12;
-            mapping[i] = [0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10][i % 12] + i / 12 * 12;
-            // mapping[i] = [0, 0, 4, 4, 4, 4, 9, 9, 9, 9, 9, 0][i % 12] + i / 12 * 12;
-        }
-    });
 
     let _stream = device.build_output_stream(
         &config,
@@ -101,6 +134,7 @@ fn s() {
                     // v = biquad2_b2.run(v);
                     // v = dft2.filter(v);
                     v = brj.process(v);
+                    // v = iirfba.process(v);
                     data[2 * i + 0] = v.clamp(-1.0, 1.0) as f32;
                     data[2 * i + 1] = v.clamp(-1.0, 1.0) as f32;
                 }
@@ -116,86 +150,105 @@ fn s() {
 }
 
 struct BinState {
-    band_in: DirectForm2Transposed,
-    band_out: DirectForm2Transposed,
+    band_in: IIRFilterBA<4>,  // order 2 bandpass
+    band_out: IIRFilterBA<2>, // order 1 bandpass
     log2_band_center: f64,
-    am_phase: (f64, f64),
-    am_phase_step: (f64, f64),
-    repitch_lowpass: DirectForm2Transposed,
+    log2_band_center_to: f64,
+    am_phase: (NFloat, NFloat),
+    am_phase_step: (NFloat, NFloat),
+    gain: Option<NFloat>,
+    repitch_lowpass: IIRFilterBA<4>, // order 3 lowpass
 }
 impl BinState {
-    fn gen_filter_sos(log2_band_center: f64, config: &BinRepitchJoinConfig) -> (Sos, Sos, Sos) {
-        let (cutoff_low, cutoff_hi) = (
+    fn update_filters(
+        &mut self,
+        log2_band_center: f64,
+        log2_band_center_to: f64,
+        config: &BinRepitchJoinConfig,
+    ) {
+        let (low_cutoff, high_cutoff) = (
             (log2_band_center - config.log2_bin_width * 0.5).exp2() * config.zero_freq,
             (log2_band_center + config.log2_bin_width * 0.5).exp2() * config.zero_freq,
         );
-        (
-            zpk2sos(
-                &butter(
-                    config.order_band_in,
-                    FilterType::BandPass(cutoff_low, cutoff_hi),
-                    config.sample_rate,
-                )
-                .unwrap(),
-                None,
-            )
-            .unwrap(),
-            zpk2sos(
-                &butter(
-                    config.order_band_out,
-                    FilterType::BandPass(cutoff_low, cutoff_hi),
-                    config.sample_rate,
-                )
-                .unwrap(),
-                None,
-            )
-            .unwrap(),
-            zpk2sos(
-                &butter(
-                    config.order_repitch_lowpass,
-                    FilterType::LowPass(cutoff_hi),
-                    config.sample_rate,
-                )
-                .unwrap(),
-                None,
-            )
-            .unwrap(),
-        )
+        // config.order_band_in;
+        self.band_in.set_filter(
+            config.sample_rate,
+            IIRFilterType::BandPass {
+                low_cutoff,
+                high_cutoff,
+            },
+            2,
+        );
+        let (low_cutoff, high_cutoff) = (
+            (log2_band_center_to - config.log2_bin_width * 0.5).exp2() * config.zero_freq,
+            (log2_band_center_to + config.log2_bin_width * 0.5).exp2() * config.zero_freq,
+        );
+        // config.order_band_out;
+        // config.order_repitch_lowpass;
+        self.band_out.set_filter(
+            config.sample_rate,
+            IIRFilterType::BandPass {
+                low_cutoff,
+                high_cutoff,
+            },
+            1,
+        );
+        self.repitch_lowpass.set_filter(
+            config.sample_rate,
+            IIRFilterType::LowPass {
+                cutoff: high_cutoff,
+            },
+            3,
+        );
     }
     fn gen_am_frequencies(
-        log2_band_center_from: f64,
-        log2_band_center_to: f64,
+        log2_band_center_from: NFloat,
+        log2_band_center_to: NFloat,
         config: &BinRepitchJoinConfig,
-    ) -> (f64, f64) {
+    ) -> (NFloat, NFloat) {
         let log2_f_off = log2_band_center_to - log2_band_center_from;
         let freq_1 = (1.0 + log2_band_center_from + 0.5 * log2_f_off).exp2() * config.zero_freq;
         let freq_2 = (1.0 + log2_band_center_from + log2_f_off).exp2() * config.zero_freq;
         (freq_1 / config.sample_rate, freq_2 / config.sample_rate)
     }
-    fn new(log2_band_center: f64, config: &BinRepitchJoinConfig) -> Self {
-        let filter_sos = Self::gen_filter_sos(log2_band_center, config);
-        Self {
+    fn new(
+        log2_band_center: f64,
+        log2_band_center_to: f64,
+        gain: Option<NFloat>,
+        config: &BinRepitchJoinConfig,
+    ) -> Self {
+        let mut s = Self {
             log2_band_center,
+            log2_band_center_to,
             am_phase: (0.0, 0.0),
-            am_phase_step: Self::gen_am_frequencies(log2_band_center, log2_band_center, config),
-            band_in: DirectForm2Transposed::new(&filter_sos.0),
-            band_out: DirectForm2Transposed::new(&filter_sos.1),
-            repitch_lowpass: DirectForm2Transposed::new(&filter_sos.2),
+            am_phase_step: Self::gen_am_frequencies(log2_band_center, log2_band_center_to, config),
+            gain,
+            band_in: IIRFilterBA::new(),
+            band_out: IIRFilterBA::new(),
+            repitch_lowpass: IIRFilterBA::new(),
+        };
+        s.update_filter_shape(config);
+        s
+    }
+    fn update_filter_shape(&mut self, config: &BinRepitchJoinConfig) {
+        self.update_filters(self.log2_band_center, self.log2_band_center_to, config);
+    }
+    fn retune(
+        &mut self,
+        log2_band_center: f64,
+        log2_band_center_to: f64,
+        gain: Option<NFloat>,
+        config: &BinRepitchJoinConfig,
+    ) {
+        self.gain = gain;
+        if gain.is_none() {
+            return;
         }
-    }
-    fn update_config(&mut self, log2_band_center: f64, config: &BinRepitchJoinConfig) {
-        // TODO: implement buttersworth filters myself so I can actually change the parameters.
-        assert_no_alloc::permit_alloc(|| {
-            let filter_sos = Self::gen_filter_sos(log2_band_center, config);
-            self.log2_band_center = log2_band_center;
-            self.band_in = DirectForm2Transposed::new(&filter_sos.0);
-            self.band_out = DirectForm2Transposed::new(&filter_sos.1);
-            self.repitch_lowpass = DirectForm2Transposed::new(&filter_sos.2);
-        })
-    }
-    fn update_repitch_mapping(&mut self, log2_band_center_to: f64, config: &BinRepitchJoinConfig) {
+        self.log2_band_center = log2_band_center;
+        self.log2_band_center_to = log2_band_center_to;
         self.am_phase_step =
-            Self::gen_am_frequencies(self.log2_band_center, log2_band_center_to, config);
+            Self::gen_am_frequencies(log2_band_center, log2_band_center_to, config);
+        self.update_filters(log2_band_center, log2_band_center_to, config);
     }
     fn sample_am(&mut self) -> (f64, f64) {
         self.am_phase.0 = (self.am_phase.0 + self.am_phase_step.0) % 1.0;
@@ -208,10 +261,7 @@ impl BinState {
 }
 pub struct BinRepitchJoin {
     pub config: BinRepitchJoinConfig,
-    repitch_mappings: Vec<usize>,
-    log2_bins: Vec<f64>,
     bin_states: Vec<BinState>,
-    bin_scratch: Vec<f64>,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct BinRepitchJoinConfig {
@@ -223,36 +273,36 @@ pub struct BinRepitchJoinConfig {
     pub order_repitch_lowpass: u32,
 }
 impl BinRepitchJoin {
-    pub fn new_alloc(config: BinRepitchJoinConfig, log2_bins: Vec<f64>) -> Self {
-        let n_bins = log2_bins.len();
+    pub fn new(
+        config: BinRepitchJoinConfig,
+        n_bins: usize,
+        f: impl Fn(usize) -> (f64, f64, Option<NFloat>),
+    ) -> Self {
         Self {
             config,
-            repitch_mappings: (0..n_bins).collect(),
-            bin_scratch: std::iter::repeat_n(0.0, n_bins).collect(),
-            bin_states: log2_bins
-                .iter()
-                .map(|log2_band_center| BinState::new(*log2_band_center, &config))
+            bin_states: (0..n_bins)
+                .map(f)
+                .map(|(log2_band_center, log2_band_center_to, gain)| {
+                    BinState::new(log2_band_center, log2_band_center_to, gain, &config)
+                })
                 .collect(),
-            log2_bins,
         }
     }
 
     pub fn process(&mut self, s: NFloat) -> NFloat {
-        let s = s as f64;
-        self.bin_scratch.iter_mut().for_each(|v| *v = 0.0);
+        let s = s;
 
-        for (i, bin) in self.bin_states.iter_mut().enumerate() {
-            let s_bin = bin.band_in.filter(s);
-            let am = bin.sample_am();
-            let s_bin_repitched = bin.repitch_lowpass.filter(s_bin * am.0) * am.1;
-            self.bin_scratch[self.repitch_mappings[i]] += s_bin_repitched;
-        }
         let mut out = 0.0;
-        for (bin, scratch) in self.bin_states.iter_mut().zip(self.bin_scratch.iter()) {
-            out += bin.band_out.filter(*scratch);
+        for bin in &mut self.bin_states {
+            let s_bin = bin.band_in.process(s);
+            let am = bin.sample_am();
+            // let s_bin_repitched = bin.repitch_lowpass.process(s_bin * am.0) * am.1;
+            // out += bin.band_out.process(s_bin_repitched);
+            out += bin.band_out.process(s_bin);
+            out += s_bin;
         }
 
-        out as NFloat
+        out
     }
 
     pub fn set_config(&mut self, config: BinRepitchJoinConfig) {
@@ -263,43 +313,17 @@ impl BinRepitchJoin {
             || config.sample_rate != self.config.sample_rate
             || config.zero_freq != self.config.zero_freq
         {
-            for (log2_band_center, bin) in self.log2_bins.iter().zip(self.bin_states.iter_mut()) {
-                bin.update_config(*log2_band_center, &config);
+            for bin in &mut self.bin_states {
+                bin.update_filter_shape(&config);
             }
         }
 
-        if config.sample_rate != self.config.sample_rate
-            || config.zero_freq != self.config.zero_freq
-        {
-            self.set_repitch(|_| {});
-        }
         self.config = config;
     }
-    pub fn set_bins(&mut self, f: impl FnOnce(&mut [f64])) {
-        f(&mut self.log2_bins);
-
-        for (log2_band_center, bin) in self.log2_bins.iter().zip(self.bin_states.iter_mut()) {
-            bin.update_config(*log2_band_center, &self.config);
-        }
-        self.set_repitch(|_| {});
-    }
-    pub fn set_repitch(&mut self, f: impl FnOnce(&mut [usize])) {
-        let n_bins = self.bin_scratch.len();
-
-        f(&mut self.repitch_mappings);
-
-        for (bin, scratch) in self.bin_states.iter().zip(self.bin_scratch.iter_mut()) {
-            *scratch = bin.log2_band_center;
-        }
-        for (bin, mapping) in self
-            .bin_states
-            .iter_mut()
-            .zip(self.repitch_mappings.iter_mut())
-        {
-            if *mapping >= n_bins {
-                *mapping = n_bins - 1
-            }
-            bin.update_repitch_mapping(self.bin_scratch[*mapping], &self.config);
+    pub fn retune(&mut self, f: impl Fn(usize) -> (f64, f64, Option<NFloat>)) {
+        for (i, bin) in self.bin_states.iter_mut().enumerate() {
+            let (from, to, gain) = f(i);
+            bin.retune(from, to, gain, &self.config);
         }
     }
 }
