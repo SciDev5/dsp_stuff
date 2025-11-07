@@ -1,0 +1,15 @@
+[package]
+name = "brj_test"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+dsp_stuff = { path = "../../" }
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = [
+    "assert_process_allocs",
+    "vst3",
+] }
+serde = { version = "1.0", features = ["derive"] }

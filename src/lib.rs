@@ -1,8 +1,10 @@
 use num::Complex;
 
+pub mod binrepitchjoin;
 pub mod conv;
 pub mod fft;
 pub mod wavetable;
+
 pub use nih_plug;
 
 #[cfg(feature = "prefer_f32")]
