@@ -1,16 +1,10 @@
-use iir_filters::{
-    filter::{DirectForm2Transposed, Filter},
-    filter_design::{FilterType, butter},
-    sos::{Sos, zpk2sos},
-};
-
 use crate::{
     NFloat,
-    iir::{IIRFilterBA, IIRFilterType},
+    iir::{IIRFilterBA, IIRFilterBABand1, IIRFilterBABand2, IIRFilterBALowHigh3, IIRFilterType},
 };
 
 #[test]
-fn s() {
+fn brj_run() {
     // use biquad::*;
 
     // // Cutoff and sampling frequencies
@@ -109,14 +103,14 @@ fn s() {
             order_band_out: 1,
             order_repitch_lowpass: 4,
         },
-        48,
+        60,
         |i| {
-            let j = [0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11][i % 12] + i / 12 * 12;
-            // let j = [0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10][i % 12] + i / 12 * 12;
+            // let j = [0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11][i % 12] + i / 12 * 12;
+            let j = [0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10][i % 12] + i / 12 * 12;
             // let j = [0, 0, 4, 4, 4, 4, 9, 9, 9, 9, 9, 0][i % 12] + i / 12 * 12;
             (
-                i as f64 / 12.0 - 1.0,
-                j as f64 / 12.0 - 1.0,
+                i as f64 / 12.0 - 2.0,
+                j as f64 / 12.0 - 2.0,
                 Some(1.0 as NFloat),
             )
         },
@@ -150,14 +144,14 @@ fn s() {
 }
 
 struct BinState {
-    band_in: IIRFilterBA<4>,  // order 2 bandpass
-    band_out: IIRFilterBA<2>, // order 1 bandpass
+    band_in: IIRFilterBABand2,  // order 2 bandpass
+    band_out: IIRFilterBABand1, // order 1 bandpass
     log2_band_center: f64,
     log2_band_center_to: f64,
     am_phase: (NFloat, NFloat),
     am_phase_step: (NFloat, NFloat),
     gain: Option<NFloat>,
-    repitch_lowpass: IIRFilterBA<4>, // order 3 lowpass
+    repitch_lowpass: IIRFilterBALowHigh3, // order 3 lowpass
 }
 impl BinState {
     fn update_filters(
@@ -231,7 +225,9 @@ impl BinState {
         s
     }
     fn update_filter_shape(&mut self, config: &BinRepitchJoinConfig) {
-        self.update_filters(self.log2_band_center, self.log2_band_center_to, config);
+        if self.gain.is_some() {
+            self.update_filters(self.log2_band_center, self.log2_band_center_to, config);
+        }
     }
     fn retune(
         &mut self,
@@ -294,12 +290,12 @@ impl BinRepitchJoin {
 
         let mut out = 0.0;
         for bin in &mut self.bin_states {
-            let s_bin = bin.band_in.process(s);
-            let am = bin.sample_am();
-            // let s_bin_repitched = bin.repitch_lowpass.process(s_bin * am.0) * am.1;
-            // out += bin.band_out.process(s_bin_repitched);
-            out += bin.band_out.process(s_bin);
-            out += s_bin;
+            if let Some(gain) = bin.gain {
+                let s_bin = bin.band_in.process(s);
+                let am = bin.sample_am();
+                let s_bin_repitched = bin.repitch_lowpass.process(s_bin * am.0) * am.1;
+                out += bin.band_out.process(s_bin_repitched) * gain;
+            }
         }
 
         out
@@ -317,10 +313,14 @@ impl BinRepitchJoin {
                 bin.update_filter_shape(&config);
             }
         }
-
         self.config = config;
     }
-    pub fn retune(&mut self, f: impl Fn(usize) -> (f64, f64, Option<NFloat>)) {
+    pub fn set_config_retune(
+        &mut self,
+        f: impl Fn(usize) -> (f64, f64, Option<NFloat>),
+        config: BinRepitchJoinConfig,
+    ) {
+        self.config = config;
         for (i, bin) in self.bin_states.iter_mut().enumerate() {
             let (from, to, gain) = f(i);
             bin.retune(from, to, gain, &self.config);

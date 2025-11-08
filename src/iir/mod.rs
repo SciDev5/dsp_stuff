@@ -1,11 +1,17 @@
 // adapted from https://github.com/scipy/scipy/blob/v1.16.2/scipy/signal/_filter_design.py
 
-use crate::NFloat;
+use crate::{NFloat, util::HeaplessContinuousRing};
 
+#[derive(Debug, Clone, Copy)]
 pub enum IIRFilterType {
     LowPass { cutoff: f64 },
     HighPass { cutoff: f64 },
     BandPass { low_cutoff: f64, high_cutoff: f64 },
+}
+#[derive(Debug, Clone, Copy)]
+pub enum IIRFilterCategory {
+    LowHigh,
+    Band,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,63 +66,70 @@ fn bilinear_zpk<const N: usize>((mut zeros, mut poles, mut gain): ZPK<N>, fs: f6
     (zeros, poles, gain)
 }
 
-pub struct IIRFilterBA<const N: usize> {
+pub type IIRFilterBABand1 = IIRFilterBA<2, 4>;
+pub type IIRFilterBABand2 = IIRFilterBA<4, 8>;
+pub type IIRFilterBALowHigh1 = IIRFilterBA<1, 2>;
+pub type IIRFilterBALowHigh2 = IIRFilterBA<2, 4>;
+pub type IIRFilterBALowHigh3 = IIRFilterBA<3, 6>;
+pub type IIRFilterBALowHigh4 = IIRFilterBA<4, 8>;
+const _: () = {
+    use IIRFilterCategory::*;
+    IIRFilterBABand1::VERIFY_CONSTS(1, Band);
+    IIRFilterBABand2::VERIFY_CONSTS(2, Band);
+    IIRFilterBALowHigh1::VERIFY_CONSTS(1, LowHigh);
+    IIRFilterBALowHigh2::VERIFY_CONSTS(2, LowHigh);
+    IIRFilterBALowHigh3::VERIFY_CONSTS(3, LowHigh);
+    IIRFilterBALowHigh4::VERIFY_CONSTS(4, LowHigh);
+};
+
+pub struct IIRFilterBA<const N: usize, const N2: usize> {
     bak: BAKF<N>,
-    x: heapless::Deque<NFloat, N>,
-    y: heapless::Deque<NFloat, N>,
+    x: HeaplessContinuousRing<NFloat, N2>,
+    y: HeaplessContinuousRing<NFloat, N2>,
 }
-impl<const N: usize> IIRFilterBA<N> {
+impl<const N: usize, const N2: usize> IIRFilterBA<N, N2> {
     pub fn effective_order(&self) -> u32 {
         self.bak.0.len().max(self.bak.1.len()) as u32
     }
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             bak: (heapless::Vec::new(), heapless::Vec::new(), 1.0), // H(z) = 1
-            x: heapless::Deque::new(),
-            y: heapless::Deque::new(),
+            x: HeaplessContinuousRing::new(0.0),
+            y: HeaplessContinuousRing::new(0.0),
         }
     }
     pub fn set_filter(&mut self, sample_rate: f64, ty: IIRFilterType, order: usize) {
         self.bak = bak_to_nfloat(zpk_to_bak(butter_zpk(sample_rate, ty, order).unwrap()));
     }
-    pub fn with_filter(mut self, sample_rate: f64, ty: IIRFilterType, order: usize) -> Self {
-        self.set_filter(sample_rate, ty, order);
-        self
-    }
-    /// Filter process x is input, y is prior outputs. Most recent samples at front.
     pub fn process(&mut self, x_in: NFloat) -> NFloat {
-        let x = &mut self.x;
-        let y = &mut self.y;
-
-        debug_assert_eq!(x.len(), y.len());
-        // iter from front(most recent) to back
+        let x_slice = self.x.slice();
+        let y_slice = self.y.slice();
         let mut y_out = x_in;
-        y_out += x
-            .iter()
-            .zip(self.bak.0.iter())
-            // .zip(self.bak.1.iter())
-            // .zip(std::iter::repeat_n(&1.0, 1).chain(self.bak.0.iter()))
-            .map(|(x, a)| *x * a)
-            .sum::<NFloat>();
-        y_out *= self.bak.2;
-        y_out -= y
-            .iter()
-            .zip(self.bak.1.iter())
-            // .zip(self.bak.0.iter())
-            // .zip(std::iter::repeat_n(&1.0, 1).chain(self.bak.1.iter()))
-            .map(|(y, b)| *y * b)
-            .sum::<NFloat>();
 
-        unsafe {
-            if x.len() == N {
-                x.pop_back_unchecked();
-                y.pop_back_unchecked();
-            }
-            x.push_front_unchecked(x_in);
-            y.push_front_unchecked(y_out);
+        for i in 0..N {
+            y_out += x_slice[i] * unsafe { *self.bak.0.get_unchecked(i) };
+        }
+        y_out *= self.bak.2;
+        for i in 0..N {
+            y_out -= y_slice[i] * unsafe { *self.bak.1.get_unchecked(i) };
         }
 
+        self.x.push_front(x_in);
+        self.y.push_front(y_out);
+
         y_out
+    }
+    #[allow(non_snake_case)]
+    pub const fn VERIFY_CONSTS(filter_poles: usize, ty: IIRFilterCategory) {
+        if N * 2 != N2 {
+            panic!("N2 must be equal to 2*N");
+        }
+        if N != match ty {
+            IIRFilterCategory::LowHigh => filter_poles,
+            IIRFilterCategory::Band => 2 * filter_poles,
+        } {
+            panic!("N must match pole count, N=order for lowpass/highpass, N=order*2 for bandpass");
+        }
     }
 }
 
@@ -142,8 +155,8 @@ fn test_butter_zpk() {
 }
 #[test]
 fn test_impulse() {
-    let mut thing =
-        IIRFilterBA::<10>::new().with_filter(20.0, IIRFilterType::HighPass { cutoff: 4.0 }, 1);
+    let mut thing = IIRFilterBA::<2, 4>::new();
+    thing.set_filter(20.0, IIRFilterType::HighPass { cutoff: 4.0 }, 1);
 
     let x = Vec::from_iter(std::iter::repeat_n(0.0, 10).chain(std::iter::repeat_n(1.0, 30)));
     let y: Vec<_> = x.iter().map(|x| thing.process(*x)).collect();
