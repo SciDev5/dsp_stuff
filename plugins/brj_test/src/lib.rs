@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub struct BRJTest {
     params: Arc<BRJTestParams>,
     brj: Option<[BinRepitchJoin; 2]>,
-    pcache: (f32, f32),
+    pcache: (f32, f32, i32),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -25,6 +25,8 @@ struct BRJTestParams {
     pub test_majory: FloatParam,
     #[id = "test_param_minory"]
     pub test_minory: FloatParam,
+    #[id = "test_param_keyzero"]
+    pub test_keyzero: IntParam,
 }
 
 impl Default for BRJTest {
@@ -32,7 +34,7 @@ impl Default for BRJTest {
         Self {
             params: Arc::new(BRJTestParams::default()),
             brj: None,
-            pcache: (f32::NAN, f32::NAN),
+            pcache: (f32::NAN, f32::NAN, -1),
         }
     }
 }
@@ -48,9 +50,10 @@ impl Default for BRJTestParams {
                     max: 1.0,
                 },
             )
-            .with_unit("semitones"),
+            .with_unit("st"),
             test_majory: FloatParam::new("majory", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
             test_minory: FloatParam::new("minory", 0.0, FloatRange::Linear { min: 0.0, max: 1.0 }),
+            test_keyzero: IntParam::new("key base", 0, IntRange::Linear { min: 0, max: 12 }),
         }
     }
 }
@@ -102,15 +105,7 @@ impl Plugin for BRJTest {
             order_repitch_lowpass: 4,
         };
 
-        self.brj = Some([(); 2].map(|_| {
-            BinRepitchJoin::new(config, 72, |i| {
-                (
-                    i as f64 / 12.0 - 1.0,
-                    i as f64 / 12.0 - 1.0,
-                    Some(1.0 as NFloat),
-                )
-            })
-        }));
+        self.brj = Some([(); 2].map(|_| BinRepitchJoin::new(config, 72, |_| (0.0, 0.0, None))));
 
         true
     }
@@ -129,19 +124,24 @@ impl Plugin for BRJTest {
             let semitones_bin_width = self.params.semitones_bin_width.value();
             let test_majory = self.params.test_majory.value();
             let test_minory = self.params.test_minory.value();
+            let test_keyzero = self.params.test_keyzero.value();
             for i in 0..buffer.channels() {
                 let new_config = BinRepitchJoinConfig {
                     log2_bin_width: semitones_bin_width as f64 / 12.0,
                     ..brj[i].config
                 };
-                if self.pcache != (test_majory, test_minory) {
+                if self.pcache != (test_majory, test_minory, test_keyzero) {
                     brj[i].set_config_retune(
                         |i| {
-                            let j_maj = ([0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11][i % 12]
-                                - i as i32 % 12) as f64
+                            let j_maj = ([0, 0, 2, 2, 4, 4, 7, 7, 7, 9, 9, 11]
+                                [(i.saturating_add_signed(test_keyzero as isize)) % 12]
+                                - (i as i32 + test_keyzero) % 12)
+                                as f64
                                 / 12.0;
-                            let j_min = ([0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10][i % 12]
-                                - i as i32 % 12) as f64
+                            let j_min = ([0, 0, 2, 2, 3, 3, 7, 7, 7, 9, 9, 10]
+                                [(i.saturating_add_signed(test_keyzero as isize)) % 12]
+                                - (i as i32 + test_keyzero) % 12)
+                                as f64
                                 / 12.0;
                             let i = i as f64 / 12.0 - 2.0;
                             let j = i + j_maj * test_majory as f64 + j_min * test_minory as f64;
@@ -153,7 +153,7 @@ impl Plugin for BRJTest {
                     brj[i].set_config(new_config);
                 }
             }
-            self.pcache = (test_majory, test_minory);
+            self.pcache = (test_majory, test_minory, test_keyzero);
             for channel_samples in buffer.iter_samples() {
                 for (i, sample) in channel_samples.into_iter().enumerate() {
                     *sample = brj[i].process(*sample as NFloat) as f32;

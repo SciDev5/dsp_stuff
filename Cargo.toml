@@ -38,3 +38,5 @@ strip = "symbols"
 inherits = "release"
 debug = true
 strip = "none"
+
+# use blas: https://docs.rs/blas/latest/blas/
