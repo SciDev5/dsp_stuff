@@ -5,6 +5,7 @@ pub mod conv;
 pub mod fft;
 pub mod iir;
 pub mod util;
+pub mod vectorize;
 pub mod wavetable;
 
 pub use nih_plug;

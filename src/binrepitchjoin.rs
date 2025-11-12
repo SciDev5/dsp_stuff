@@ -121,7 +121,7 @@ fn brj_run() {
         {
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 for i in 0..data.len() / 2 {
-                    let mut v = rand::random_range(-1.0f64..1.0);
+                    let mut v: NFloat = rand::random_range(-1.0..1.0);
                     // v = biquad2_l.run(v);
                     // v = biquad2_h.run(v);
                     // v = biquad2_b.run(v);
@@ -201,9 +201,13 @@ impl BinState {
         config: &BinRepitchJoinConfig,
     ) -> (NFloat, NFloat) {
         let log2_f_off = log2_band_center_to - log2_band_center_from;
-        let freq_1 = (1.0 + log2_band_center_from + 0.5 * log2_f_off).exp2() * config.zero_freq;
-        let freq_2 = (1.0 + log2_band_center_from + log2_f_off).exp2() * config.zero_freq;
-        (freq_1 / config.sample_rate, freq_2 / config.sample_rate)
+        let freq_1 =
+            (1.0 + log2_band_center_from + 0.5 * log2_f_off).exp2() * config.zero_freq as NFloat;
+        let freq_2 = (1.0 + log2_band_center_from + log2_f_off).exp2() * config.zero_freq as NFloat;
+        (
+            freq_1 / config.sample_rate as NFloat,
+            freq_2 / config.sample_rate as NFloat,
+        )
     }
     fn new(
         log2_band_center: f64,
@@ -215,7 +219,11 @@ impl BinState {
             log2_band_center,
             log2_band_center_to,
             am_phase: (0.0, 0.0),
-            am_phase_step: Self::gen_am_frequencies(log2_band_center, log2_band_center_to, config),
+            am_phase_step: Self::gen_am_frequencies(
+                log2_band_center as NFloat,
+                log2_band_center_to as NFloat,
+                config,
+            ),
             gain,
             band_in: IIRFilterBA::new(),
             band_out: IIRFilterBA::new(),
@@ -242,16 +250,19 @@ impl BinState {
         }
         self.log2_band_center = log2_band_center;
         self.log2_band_center_to = log2_band_center_to;
-        self.am_phase_step =
-            Self::gen_am_frequencies(log2_band_center, log2_band_center_to, config);
+        self.am_phase_step = Self::gen_am_frequencies(
+            log2_band_center as NFloat,
+            log2_band_center_to as NFloat,
+            config,
+        );
         self.update_filters(log2_band_center, log2_band_center_to, config);
     }
     fn sample_am(&mut self) -> (f64, f64) {
         self.am_phase.0 = (self.am_phase.0 + self.am_phase_step.0) % 1.0;
         self.am_phase.1 = (self.am_phase.1 + self.am_phase_step.1) % 1.0;
         (
-            (self.am_phase.0 * std::f64::consts::TAU).sin(),
-            (self.am_phase.1 * std::f64::consts::TAU).sin(),
+            (self.am_phase.0 as f64 * std::f64::consts::TAU).sin(),
+            (self.am_phase.1 as f64 * std::f64::consts::TAU).sin(),
         )
     }
 }
@@ -293,7 +304,8 @@ impl BinRepitchJoin {
             if let Some(gain) = bin.gain {
                 let s_bin = bin.band_in.process(s);
                 let am = bin.sample_am();
-                let s_bin_repitched = bin.repitch_lowpass.process(s_bin * am.0) * am.1;
+                let s_bin_repitched =
+                    bin.repitch_lowpass.process(s_bin * am.0 as NFloat) * am.1 as NFloat;
                 out += bin.band_out.process(s_bin_repitched) * gain;
             }
         }
